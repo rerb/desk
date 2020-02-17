@@ -28,8 +28,7 @@ logger = logging.getLogger()
 def get_paginated_content(url,
                           since_updated_at=None,
                           passed_pagination_limit=False):
-    """Returns a dictionary of `resp.json()`
-    objects, keyed by page number.
+    """A generator that returns pages.
     """
     full_url = BASE_DESK_API_URL + url
 
@@ -51,21 +50,16 @@ def get_paginated_content(url,
         raise Exception("response is {status_code} ({resp})".format(
             status_code=resp.status_code, resp=resp))
 
-    json = resp.json()
+    page = resp.json()
 
-    # get the next page href.
-    try:
-        next_page_href = json["_links"]["next"]["href"]
-    except TypeError:  # 'NoneType' object is not subscriptable
-        next_page_href = None
-
-    pages_key = (json["page"] if not passed_pagination_limit
-                 else json["page"] + PAGINATION_LIMIT)
-
-    pages = {pages_key: json}
+    yield page
 
     # get the next page.
-    if next_page_href:
+    next_page = page["_links"]["next"]
+
+    if next_page:
+
+        next_page_href = next_page["href"]
 
         magic_page_marker = "page=" + str(PAGINATION_LIMIT + 1)
 
@@ -74,26 +68,23 @@ def get_paginated_content(url,
             # strip page parameter.
             next_page_href = next_page_href.replace(magic_page_marker, '')
             # set since_updated_at.
-            date_updated_at = json["_embedded"]["entries"][-1]["updated_at"]
+            date_updated_at = page["_embedded"]["entries"][-1]["updated_at"]
             since_updated_at = datetime.datetime.strptime(
                 date_updated_at, "%Y-%m-%dT%H:%S:%fZ").timestamp()
             # let recursive calls know.
             passed_pagination_limit = True
 
-        # add the next page to pages.
-        next_pages = get_paginated_content(
-            url=next_page_href,
-            since_updated_at=since_updated_at,
-            passed_pagination_limit=passed_pagination_limit)
+        for page in get_paginated_content(
+                url=next_page_href,
+                since_updated_at=since_updated_at,
+                passed_pagination_limit=passed_pagination_limit):
 
-        pages.update(next_pages)
-
-    return pages
+            yield page
 
 
-def get_cases(per_page=100):
-    """Returns a dictionary of cases, as dictionaries, indexed
-    by ID.
+def export_and_save_cases(per_page=100):
+    """Exports Desk cases, and stores them in database
+    named `PG_DBNAME`.
     """
     endpoint_url = "/api/v2/cases?per_page=" + str(per_page)
 
@@ -103,42 +94,19 @@ def get_cases(per_page=100):
         "customer",
         "draft",
         "feedbacks",
-        "locked_by",
         "message"))
 
-    pages = get_paginated_content(endpoint_url)
+    case_table = get_case_table()
 
-    cases = {}
+    cnx = get_database_connection()
 
-    for page_number, page in pages.items():
-        logger.warning("collating page {page_number}".format(
-            page_number=page_number))
-        for entry in page["_embedded"]["entries"]:
-            cases[entry["id"]] = entry
+    for page in get_paginated_content(endpoint_url):
 
-    return cases
+        for case in page["_embedded"]["entries"]:
 
+            full_case = embed_related_records_into_case(case)
 
-def dump_cases(cases, filename):
-    """Dump `cases` to `filename`.
-    Return file.
-    """
-    with open(filename, "w") as f:
-        print(cases, file=f)
-
-    return f
-
-
-def load_cases(filename):
-    """Load cases from `filename`.
-    Returns dict of cases.
-    """
-    cases = None
-
-    with open(filename, "r") as f:
-        cases = ast.literal_eval(f.read())
-
-    return cases
+            insert_case(case=full_case, case_table=case_table, cnx=cnx)
 
 
 def get_linked(case, link_type, per_page=100):
@@ -160,9 +128,7 @@ def get_linked(case, link_type, per_page=100):
         if count < 1:
             return linked
 
-    pages = get_paginated_content(endpoint_url)
-
-    for page_number, page in pages.items():
+    for page in get_paginated_content(endpoint_url):
         for entry in page["_embedded"]["entries"]:
             linked.append(entry)
 
@@ -174,9 +140,6 @@ def embed_related_records_into_case(case):
     that can't be embedded via the Desk API
     (rather than provide a foreign key).
     """
-    endpoint_url = "/api/v2/cases/{case_id}".format(
-        case_id=case["id"])
-
     for link_type in ["notes", "attachments", "replies"]:
 
         case["_embedded"][link_type] = get_linked(case=case,
@@ -193,12 +156,12 @@ def embed_related_records_into_case(case):
 def create_database():
     """Create the database.
     """
-    try:
-        cnx = psycopg2.connect(dbname=dbname,
-                               user=PG_USER,
-                               host=PG_HOST,
-                               password=PG_PASSWORD)
+    cnx = psycopg2.connect(dbname="postgres",
+                           user=PG_USER,
+                           host=PG_HOST,
+                           password=PG_PASSWORD)
 
+    try:
         cnx.set_isolation_level(
             psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
 
@@ -206,15 +169,14 @@ def create_database():
 
         try:
             cursor.execute('CREATE DATABASE ' + PG_DBNAME)
-        except psycopg2.DuplicateDatabase:
+        except psycopg2.errors.DuplicateDatabase:
             logger.warning("Database {db_name} already exists.".format(
                 db_name=PG_DBNAME))
         finally:
             cursor.close()
 
     finally:
-        if cnx:
-            cnx.close()
+        cnx.close()
 
 
 def get_database_connection():
@@ -260,12 +222,16 @@ def insert_case(case, case_table, cnx):
     If `case` is already in `case_table`, a warning should
     be logged, and None returned.  However, that's not working.
 
-    Make sure `case` isn't
+    Make sure `case` isn't already in the database.
     """
+    logger.warning("Inserting case " + str(case["id"]))
+
     try:
-        return cnx.execute(case_table.insert(),
-                           id=case["id"],
-                           doc=case)
+        result = cnx.execute(case_table.insert(),
+                             id=case["id"],
+                             doc=case)
+        return result
+
     except psycopg2.errors.UniqueViolation:
         logger.warning("Case {id} already exists; can't be inserted.".format(
             id=case["id"]))
@@ -278,21 +244,8 @@ def insert_case(case, case_table, cnx):
 # Main
 
 
-def main(cases=None):
-
-    cases = cases or get_cases()
+def main():
 
     create_database()
 
-    case_table = get_case_table()
-
-    cnx = get_database_connection()
-
-    # Wrap cases.values() in list() so it will be
-    # serializeable (rather than a dict_items).
-    for case in list(cases.values()):
-
-        embed_related_records_into_case(case)
-
-        logger.warning("Inserting case " + str(case["id"]))
-        insert_case(case=case, case_table=case_table, cnx=cnx)
+    export_and_save_cases()

@@ -7,10 +7,17 @@ authors = ["Robert Erb <bob.erb@aashe.org>"]
 [tool.poetry.dependencies]
 python = "^3.7"
 requests = "^2.22"
+psycopg2 = "^2.8"
+sqlalchemy = "^1.3"
 
 [tool.poetry.dev-dependencies]
 ipython = "^7.10"
 flake8 = "^3.7"
+jedi = "^0.16.0"
+rope = "^0.16.0"
+importmagic = "^0.1.7"
+autopep8 = "^1.5"
+yapf = "^0.29.0"
 
 [build-system]
 requires = ["poetry>=0.12"]

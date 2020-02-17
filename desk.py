@@ -1,12 +1,31 @@
-import ast
+"""
+Export cases from Desk.com, and store them in a PostgreSQL
+database.
+
+`main()` will export and upsert all cases.
+
+`export_and_upsert_new_cases()` will export and upsert only
+cases updated since the most recently updated case already
+in the database.
+
+The following environmental variables must be set:
+
+    - `DESK_USERNAME`
+    - `DESK_PASSWORD`
+    - `PG_USER`
+    - `PG_HOST`
+    - `PG_PORT`
+    - `PG_PASSWORD`
+    - `PG_DBNAME`
+"""
 import datetime
-import json
 import logging
 import os
 
 import psycopg2
 import sqlalchemy
 import requests
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
 DESK_API_AUTH = {"username": os.environ["DESK_USERNAME"],
@@ -82,9 +101,16 @@ def get_paginated_content(url,
             yield page
 
 
-def export_and_save_cases(per_page=100):
+def export_and_upsert_cases(per_page=100,
+                            since_updated_at=None,
+                            cnx=None):
     """Exports Desk cases, and stores them in database
     named `PG_DBNAME`.
+
+    When `since_updated_at` is provided, only cases updated
+    since `since_updated_at` are exported and saved.
+
+    By default, all cases are exported and saved.
     """
     endpoint_url = "/api/v2/cases?per_page=" + str(per_page)
 
@@ -96,17 +122,17 @@ def export_and_save_cases(per_page=100):
         "feedbacks",
         "message"))
 
-    case_table = get_case_table()
+    cnx = cnx or get_database_connection()
 
-    cnx = get_database_connection()
+    case_table = get_case_table(cnx=cnx)
 
-    for page in get_paginated_content(endpoint_url):
+    for page in get_paginated_content(endpoint_url, since_updated_at):
 
         for case in page["_embedded"]["entries"]:
 
             full_case = embed_related_records_into_case(case)
 
-            insert_case(case=full_case, case_table=case_table, cnx=cnx)
+            upsert_case(case=full_case, case_table=case_table, cnx=cnx)
 
 
 def get_linked(case, link_type, per_page=100):
@@ -146,6 +172,25 @@ def embed_related_records_into_case(case):
                                                   link_type=link_type)
 
     return case
+
+
+def export_and_upsert_new_cases(cnx=None, case_table=None):
+    """Export and save all cases updated since the
+    last case in the database.
+    """
+    cnx = cnx or get_database_connection()
+
+    case_table = case_table or get_case_table(cnx=cnx)
+
+    max_updated_at = sqlalchemy.func.max(
+        case_table.c.doc["updated_at"].astext).execute().fetchone()[0]
+
+    since_updated_at = datetime.datetime.strptime(
+        max_updated_at, "%Y-%m-%dT%H:%S:%fZ").timestamp()
+
+    export_and_upsert_cases(cnx=cnx,
+                          since_updated_at=since_updated_at)
+
 
 ##############################################################################
 ##############################################################################
@@ -191,14 +236,14 @@ def get_database_connection():
     return engine.connect()
 
 
-def get_case_table():
+def get_case_table(cnx=None):
     """Get the case table.
 
     Creates the table if it doesn't exist.
 
     Returns sqlalchemy.Table for cases.
     """
-    cnx = get_database_connection()
+    cnx = cnx or get_database_connection()
 
     meta = sqlalchemy.MetaData(cnx)
 
@@ -213,29 +258,25 @@ def get_case_table():
     return case_table
 
 
-def insert_case(case, case_table, cnx):
-    """Insert `case` into `case_table` using
+def upsert_case(case, case_table, cnx):
+    """Upsert `case` into `case_table` using
     database connection `cnx`.
 
     Returns a sqlalchemy.ResultProxy if successful.
-
-    If `case` is already in `case_table`, a warning should
-    be logged, and None returned.  However, that's not working.
-
-    Make sure `case` isn't already in the database.
     """
     logger.warning("Inserting case " + str(case["id"]))
 
-    try:
-        result = cnx.execute(case_table.insert(),
-                             id=case["id"],
-                             doc=case)
-        return result
+    upsert_statement = pg_insert(case_table).values(
+        id=case["id"], doc=case).on_conflict_do_update(
+            constraint="case_pkey",
+            set_={"doc": case}
+        )
 
-    except psycopg2.errors.UniqueViolation:
-        logger.warning("Case {id} already exists; can't be inserted.".format(
-            id=case["id"]))
-        return None
+    result = cnx.execute(upsert_statement,
+                         id=case["id"],
+                         doc=case)
+
+    return result
 
 
 ##############################################################################
@@ -248,4 +289,9 @@ def main():
 
     create_database()
 
-    export_and_save_cases()
+    export_and_upsert_cases()
+
+
+if __name__ == "__main__":
+
+    main()

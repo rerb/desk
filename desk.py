@@ -227,7 +227,7 @@ def create_database():
 def get_database_connection():
 
     engine = sqlalchemy.create_engine(
-        "postgresql://{pg_user}:pg_password@"
+        "postgresql://{pg_user}:{pg_password}@"
         "{db_host}:{db_port}/{db_name}".format(
             pg_user=PG_USER, pg_password=PG_PASSWORD,
             db_host=PG_HOST, db_port=PG_PORT,

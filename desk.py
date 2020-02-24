@@ -206,32 +206,6 @@ def export_and_upsert_new_cases(cnx=None, case_table=None):
 # Database functions
 
 
-def create_database():
-    """Create the database.
-    """
-    cnx = psycopg2.connect(dbname="postgres",
-                           user=PG_USER,
-                           host=PG_HOST,
-                           password=PG_PASSWORD)
-
-    try:
-        cnx.set_isolation_level(
-            psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-
-        cursor = cnx.cursor()
-
-        try:
-            cursor.execute('CREATE DATABASE ' + PG_DBNAME)
-        except psycopg2.errors.DuplicateDatabase:
-            logger.warning("Database {db_name} already exists.".format(
-                db_name=PG_DBNAME))
-        finally:
-            cursor.close()
-
-    finally:
-        cnx.close()
-
-
 def get_database_connection():
 
     engine = sqlalchemy.create_engine(
@@ -294,8 +268,6 @@ def upsert_case(case, case_table, cnx):
 
 
 def main():
-
-    create_database()
 
     export_and_upsert_new_cases()
 

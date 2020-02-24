@@ -185,8 +185,16 @@ def export_and_upsert_new_cases(cnx=None, case_table=None):
     max_updated_at = sqlalchemy.func.max(
         case_table.c.doc["updated_at"].astext).execute().fetchone()[0]
 
-    since_updated_at = datetime.datetime.strptime(
-        max_updated_at, "%Y-%m-%dT%H:%S:%fZ").timestamp()
+    if max_updated_at:
+        since_updated_at = datetime.datetime.strptime(
+            max_updated_at, "%Y-%m-%dT%H:%S:%fZ").timestamp()
+        logger.warning("Exporting/upserting cases updated since {}.".format(
+            since_updated_at))
+    else:
+        since_updated_at = None
+        logger.warning(
+            "No extant cases found in database; "
+            "exporting/upserting all cases.")
 
     export_and_upsert_cases(cnx=cnx,
                             since_updated_at=since_updated_at)
@@ -289,7 +297,7 @@ def main():
 
     create_database()
 
-    export_and_upsert_cases()
+    export_and_upsert_new_cases()
 
 
 if __name__ == "__main__":

@@ -189,7 +189,7 @@ def export_and_upsert_new_cases(cnx=None, case_table=None):
         max_updated_at, "%Y-%m-%dT%H:%S:%fZ").timestamp()
 
     export_and_upsert_cases(cnx=cnx,
-                          since_updated_at=since_updated_at)
+                            since_updated_at=since_updated_at)
 
 
 ##############################################################################

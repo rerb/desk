@@ -2,11 +2,11 @@
 Export cases from Desk.com, and store them in a PostgreSQL
 database.
 
-`main()` will export and upsert all cases.
+`main()` will export and upsert all "new" cases.
 
-`export_and_upsert_new_cases()` will export and upsert only
-cases updated since the most recently updated case already
-in the database.
+"new" cases are those updated since the most recently updated case 
+already in the database.  If there are no cases in the database,
+all cases are exported and stored.
 
 The following environmental variables must be set:
 
